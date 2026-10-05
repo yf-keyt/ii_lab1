@@ -8,6 +8,29 @@ from app.config import Settings
 from app.health import HealthState, start_health_server
 
 
+async def test_handler_cancellation_completes_before_tracker_close_returns():
+    from app.lifecycle import TaskTracker
+
+    tracker = TaskTracker()
+    entered = asyncio.Event()
+    cleaned_up = asyncio.Event()
+
+    async def handler(event, data):
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleaned_up.set()
+
+    task = asyncio.create_task(tracker(handler, None, {}))
+    await entered.wait()
+    await tracker.close()
+    assert task.cancelled()
+    assert cleaned_up.is_set()
+    assert not tracker.tasks
+    assert await tracker(AsyncMock(side_effect=AssertionError), None, {}) is None
+
+
 async def test_http_health_returns_503_then_200(unused_tcp_port):
     # Arrange
     pool = Mock(fetchval=AsyncMock(return_value=1))

@@ -21,7 +21,7 @@ TOKEN = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijk"
 def settings(tmp_path):
     path = tmp_path / ".env"
     path.write_text(f"BOT_TOKEN={TOKEN}\nPOSTGRES_PASSWORD=secret-db\n", encoding="utf-8")
-    return Settings.load(path, environ={})
+    return Settings.load(path, environ={}, require_llm=False)
 
 
 @pytest.mark.parametrize("text", ["Привет 👋", "/start", "<b>текст</b> & *слово*", "строка\nдва"])
@@ -79,7 +79,7 @@ def test_settings_environment_overrides_file(tmp_path):
         f"BOT_TOKEN={TOKEN}\nPOSTGRES_PASSWORD='p$a#ss'\nPOSTGRES_PORT=5432\n", encoding="utf-8"
     )
     # Act
-    config = Settings.load(path, environ={"POSTGRES_PORT": "55432"})
+    config = Settings.load(path, environ={"POSTGRES_PORT": "55432"}, require_llm=False)
     # Assert
     assert config.postgres_port == 55432
     assert config.postgres_password == "p$a#ss"
@@ -96,6 +96,7 @@ def test_invalid_port_has_safe_error(tmp_path, value):
         Settings.load(
             path,
             environ={"BOT_TOKEN": TOKEN, "POSTGRES_PASSWORD": "secret", "POSTGRES_PORT": value},
+            require_llm=False,
         )
 
 

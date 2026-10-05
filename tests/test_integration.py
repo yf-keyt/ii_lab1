@@ -120,3 +120,51 @@ async def test_real_db_password_restart_health_and_persistence(database):
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         await pool.close()
+
+
+async def test_lab1_storage_persistence_isolation_locks_and_retention(database):
+    from app.context import Turn
+    from app.storage import BusyError, Preferences, Repository
+
+    settings, _, _, _ = database
+    pool = await create_pool(settings)
+    repository = Repository(pool, settings)
+    try:
+        await repository.initialize()
+        await repository.initialize()
+        async with repository.session(41) as user:
+            await user.save_turn("Вопрос", "Ответ")
+            await user.set_temperature(0.7)
+            with pytest.raises(BusyError):
+                async with repository.session(41):
+                    pytest.fail("Concurrent user session must be rejected")
+            async with repository.session(42) as other:
+                assert await other.history() == []
+                await other.save_turn("Другой", "Другой ответ")
+        # Recreate the pool to prove state is stored in PostgreSQL, not process memory.
+        await pool.close()
+        pool = await create_pool(settings)
+        repository = Repository(pool, settings)
+        async with repository.session(41) as user:
+            assert await user.preferences() == Preferences("study", 0.7)
+            assert await user.history() == [Turn("Вопрос", "Ответ")]
+            await user.set_mode("review")
+            assert await user.history() == []
+            assert await user.preferences() == Preferences("review", 0.7)
+            await user.save_turn("Код", "Проверка")
+            await user.reset()
+            assert await user.preferences() == Preferences("review", 0.7)
+        async with repository.session(42) as other:
+            assert await other.history() == [Turn("Другой", "Другой ответ")]
+        bounded = Repository(pool, replace(settings, history_max_messages=2))
+        async with bounded.session(41) as user:
+            await user.save_turn("Первый", "1")
+            await user.save_turn("Второй", "2")
+            assert await user.history() == [Turn("Второй", "2")]
+        with pytest.raises(RuntimeError):
+            async with repository.session(41):
+                raise RuntimeError("Simulated failure")
+        async with repository.session(41) as user:
+            assert await user.history() == [Turn("Второй", "2")]
+    finally:
+        await pool.close()

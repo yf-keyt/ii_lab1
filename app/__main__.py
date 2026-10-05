@@ -3,12 +3,17 @@ import asyncio
 import logging
 
 from aiogram import Dispatcher
+from aiohttp import ClientSession
 
 from app.config import ConfigError, Settings
 from app.db import create_pool
-from app.handlers.echo import router
+from app.dialogue import Dialogue
+from app.handlers.assistant import create_router
 from app.health import HealthState, start_health_server
+from app.lifecycle import TaskTracker
+from app.llm import LLMClient
 from app.logging_setup import configure_logging
+from app.storage import Repository
 from app.telegram import create_bot
 
 logger = logging.getLogger("app")
@@ -18,6 +23,8 @@ async def run(settings: Settings) -> None:
     state = HealthState()
     bot = create_bot(settings)
     runner = None
+    llm_session = None
+    tracker = TaskTracker()
     try:
         state.pool = await create_pool(settings)
         logger.info("PostgreSQL подключён: SELECT 1 выполнен.")
@@ -31,8 +38,13 @@ async def run(settings: Settings) -> None:
                 "или используйте отдельного учебного бота."
             )
         logger.info("Telegram доступен. Бот @%s запускает polling.", me.username)
+        repository = Repository(state.pool, settings)
+        await repository.initialize()
+        llm_session = ClientSession()
+        dialogue = Dialogue(LLMClient(settings, llm_session), settings)
         dispatcher = Dispatcher()
-        dispatcher.include_router(router)
+        dispatcher.update.outer_middleware(tracker)
+        dispatcher.include_router(create_router(repository, dialogue))
         runner = await start_health_server(state, settings.health_port)
         state.polling_task = asyncio.create_task(
             dispatcher.start_polling(
@@ -40,6 +52,7 @@ async def run(settings: Settings) -> None:
                 db=state.pool,
                 allowed_updates=dispatcher.resolve_used_update_types(),
                 close_bot_session=False,
+                tasks_concurrency_limit=32,
             )
         )
         state.initialized = True
@@ -49,9 +62,12 @@ async def run(settings: Settings) -> None:
         if state.polling_task and not state.polling_task.done():
             state.polling_task.cancel()
             await asyncio.gather(state.polling_task, return_exceptions=True)
+        await tracker.close()
         if runner:
             await runner.cleanup()
         await bot.session.close()
+        if llm_session:
+            await llm_session.close()
         if state.pool:
             try:
                 async with asyncio.timeout(10):
@@ -61,7 +77,7 @@ async def run(settings: Settings) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Учебный текстовый эхо-бот")
+    parser = argparse.ArgumentParser(description="AI-ассистент студента")
     parser.add_argument("--env-file", default=".env")
     args = parser.parse_args()
     try:

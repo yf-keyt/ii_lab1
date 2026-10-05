@@ -35,6 +35,8 @@ def prepare_env(
         "POSTGRES_USER": "bot",
         "LOG_LEVEL": "INFO",
         "HEALTH_PORT": "8080",
+        "LLM_BASE_URL": "https://api.groq.com/openai/v1",
+        "LLM_MODEL": "openai/gpt-oss-20b",
     }
     for key, default in defaults.items():
         if not values.get(key):
@@ -50,6 +52,9 @@ def prepare_env(
     merged = {**values, **updates}
     if cloud and not merged.get("TELEGRAM_PROXY_URL"):
         raise ConfigError("Для облака необходимо указать внешний прокси Telegram.")
+    if not merged.get("LLM_API_KEY"):
+        updates["LLM_API_KEY"] = ask("API-ключ Groq (ввод скрыт): ").strip()
+        merged.update(updates)
     Settings.load(path, environ=merged)
     if not path.exists():
         private_write(path, "# Секретные настройки. Не добавляйте этот файл в Git.\n")
